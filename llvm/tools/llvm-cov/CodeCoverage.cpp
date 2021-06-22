@@ -157,7 +157,7 @@ private:
 
   /// The coverage data path to be remapped from, and the source path to be
   /// remapped to, when using -path-equivalence.
-  Optional<std::pair<std::string, std::string>> PathRemapping;
+  Optional<std::vector<std::pair<std::string, std::string>>> PathRemappings;
 
   /// File status cache used when finding the same file.
   StringMap<Optional<sys::fs::file_status>> FileStatusCache;
@@ -219,7 +219,7 @@ void CodeCoverageTool::collectPaths(const std::string &Path) {
   llvm::sys::fs::file_status Status;
   llvm::sys::fs::status(Path, Status);
   if (!llvm::sys::fs::exists(Status)) {
-    if (PathRemapping)
+    if (PathRemappings)
       addCollectedPath(Path);
     else
       warning("Source file doesn't exist, proceeded by ignoring it.", Path);
@@ -466,7 +466,7 @@ std::unique_ptr<CoverageMapping> CodeCoverageTool::load() {
 }
 
 void CodeCoverageTool::remapPathNames(const CoverageMapping &Coverage) {
-  if (!PathRemapping)
+  if (!PathRemappings)
     return;
 
   // Convert remapping paths to native paths with trailing seperators.
@@ -480,26 +480,31 @@ void CodeCoverageTool::remapPathNames(const CoverageMapping &Coverage) {
       NativePath += sys::path::get_separator();
     return NativePath.c_str();
   };
-  std::string RemapFrom = nativeWithTrailing(PathRemapping->first);
-  std::string RemapTo = nativeWithTrailing(PathRemapping->second);
 
-  // Create a mapping from coverage data file paths to local paths.
-  for (StringRef Filename : Coverage.getUniqueSourceFiles()) {
-    SmallString<128> NativeFilename;
-    sys::path::native(Filename, NativeFilename);
-    sys::path::remove_dots(NativeFilename, true);
-    if (NativeFilename.startswith(RemapFrom)) {
-      RemappedFilenames[Filename] =
-          RemapTo + NativeFilename.substr(RemapFrom.size()).str();
+  for (std::pair<std::string, std::string> &PathRemapping : *PathRemappings) {
+    std::string RemapFrom = nativeWithTrailing(PathRemapping.first);
+    std::string RemapTo = nativeWithTrailing(PathRemapping.second);
+
+    // Create a mapping from coverage data file paths to local paths.
+    for (StringRef Filename : Coverage.getUniqueSourceFiles()) {
+      if (!RemappedFilenames[Filename].empty())
+        continue;
+
+      SmallString<128> NativeFilename;
+      sys::path::native(Filename, NativeFilename);
+      sys::path::remove_dots(NativeFilename, true);
+      if (NativeFilename.startswith(RemapFrom)) {
+        RemappedFilenames[Filename] =
+            RemapTo + NativeFilename.substr(RemapFrom.size()).str();
+      }
     }
   }
-
+    
   // Convert input files from local paths to coverage data file paths.
   StringMap<std::string> InvRemappedFilenames;
   for (const auto &RemappedFilename : RemappedFilenames)
     InvRemappedFilenames[RemappedFilename.getValue()] =
         std::string(RemappedFilename.getKey());
-
   for (std::string &Filename : SourceFiles) {
     SmallString<128> NativeFilename;
     sys::path::native(Filename, NativeFilename);
@@ -657,8 +662,8 @@ int CodeCoverageTool::run(Command Cmd, int argc, const char **argv) {
 
   cl::opt<std::string> PathRemap(
       "path-equivalence", cl::Optional,
-      cl::desc("<from>,<to> Map coverage data paths to local source file "
-               "paths"));
+      cl::desc("<from>,<to>,... Map coverage data paths to local source file "
+               "paths."));
 
   cl::OptionCategory FilteringCategory("Function filtering options");
 
@@ -782,12 +787,19 @@ int CodeCoverageTool::run(Command Cmd, int argc, const char **argv) {
       break;
     }
 
+    SmallVector<StringRef> EquivPairs;
+
     // If path-equivalence was given and is a comma seperated pair then set
     // PathRemapping.
-    auto EquivPair = StringRef(PathRemap).split(',');
-    if (!(EquivPair.first.empty() && EquivPair.second.empty()))
-      PathRemapping = {std::string(EquivPair.first),
-                       std::string(EquivPair.second)};
+    StringRef(PathRemap).split(EquivPairs, ',');
+    std::vector<std::pair<std::string, std::string>> Remappings;
+    for (size_t I = 1; I < EquivPairs.size(); I += 2) {
+      Remappings.push_back(
+          {std::string(EquivPairs[I - 1]), std::string(EquivPairs[I])});
+    }
+    if (!Remappings.empty()) {
+      PathRemappings = Remappings;
+    }
 
     // If a demangler is supplied, check if it exists and register it.
     if (!DemanglerOpts.empty()) {
