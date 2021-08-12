@@ -487,7 +487,7 @@ void CodeCoverageTool::remapPathNames(const CoverageMapping &Coverage) {
 
     // Create a mapping from coverage data file paths to local paths.
     for (StringRef Filename : Coverage.getUniqueSourceFiles()) {
-      if (!RemappedFilenames[Filename].empty())
+      if (RemappedFilenames.count(Filename) == 1)
         continue;
 
       SmallString<128> NativeFilename;
